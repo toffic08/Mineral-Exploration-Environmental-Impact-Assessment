@@ -1,0 +1,233 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+import folium
+from streamlit_folium import folium_static
+import random
+import json
+
+# Set page configuration
+st.set_page_config(page_title="Mineral Exploration Dashboard", layout="wide")
+
+# Initialize session state for data
+if 'df_points' not in st.session_state:
+    st.session_state.df_points = None
+if 'geojson_data' not in st.session_state:
+    st.session_state.geojson_data = None
+
+# Title
+st.title("AI-Based Mineral Exploration & Environmental Impact Assessment System")
+
+# Dummy data for study areas and years
+study_areas = ["Area A", "Area B", "Area C", "Area D"]
+years = ["2020", "2021", "2022", "2023", "2024"]
+
+# Input Panel
+st.header("Input Panel")
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    selected_area = st.selectbox("Select Study Area", study_areas)
+
+with col2:
+    selected_year = st.selectbox("Select Year / Period", years)
+
+# Helper: generate sample CSV data
+def generate_sample_csv(n=30):
+    return pd.DataFrame({
+        'lat': np.random.uniform(40, 50, n),
+        'lon': np.random.uniform(-120, -110, n),
+        'potential': np.random.choice(['High', 'Medium', 'Low'], n, p=[0.7, 0.2, 0.1]),
+        'impact': np.random.choice(['Low', 'Moderate', 'High'], n, p=[0.4, 0.4, 0.2])
+    })
+
+# Helper: generate small sample GeoJSON (polygons)
+def generate_sample_geojson():
+    features = []
+    centers = [(45, -116), (46, -114), (44.5, -115)]
+    potentials = ['High', 'Medium', 'Low']
+    impacts = ['Low', 'Moderate', 'High']
+    for i, (latc, lonc) in enumerate(centers):
+        d = 0.5
+        poly = [[lonc - d, latc - d], [lonc + d, latc - d], [lonc + d, latc + d], [lonc - d, latc + d], [lonc - d, latc - d]]
+        features.append({
+            'type': 'Feature',
+            'properties': {'id': f'zone_{i+1}', 'name': f'Zone {i+1}', 'potential': potentials[i % 3], 'impact': impacts[i % 3]},
+            'geometry': {'type': 'Polygon', 'coordinates': [poly]}
+        })
+    return {'type': 'FeatureCollection', 'features': features}
+
+# Uploader / Sample files UI
+with col3:
+    uploaded_file = st.file_uploader("Upload Dataset (CSV or GeoJSON)", type=["csv", "geojson", "json"], help="CSV should have columns: lat, lon, potential, impact")
+
+    st.markdown("**Sample files / examples**")
+    sample_df = generate_sample_csv()
+    sample_csv_bytes = sample_df.to_csv(index=False).encode('utf-8')
+    st.download_button("Download sample CSV", data=sample_csv_bytes, file_name="sample_mineral.csv", mime='text/csv')
+    if st.button("Load sample CSV"):
+        st.session_state.df_points = sample_df.copy()
+        st.success("Sample CSV loaded into the app.")
+
+    sample_geo = generate_sample_geojson()
+    sample_geo_str = json.dumps(sample_geo)
+    st.download_button("Download sample GeoJSON", data=sample_geo_str, file_name="sample_zones.geojson", mime='application/geo+json')
+    if st.button("Load sample GeoJSON"):
+        st.session_state.geojson_data = sample_geo
+        st.success("Sample GeoJSON loaded into the app.")
+
+with col4:
+    run_clicked = st.button("Run Analysis")
+    if run_clicked:
+        st.success("Analysis completed! (Dummy simulation)")
+
+# Main Map Visualization Panel
+st.header("Main Map Visualization Panel")
+
+# Color mapping
+mineral_colors = {'High': 'green', 'Medium': 'yellow', 'Low': 'red'}
+env_colors = {'Low': 'green', 'Moderate': 'yellow', 'High': 'red'}
+
+# Create folium map (center from selected area / defaults)
+center_map = [45, -115]
+try:
+    m = folium.Map(location=center_map, zoom_start=6)
+except Exception:
+    m = folium.Map(location=[0, 0], zoom_start=2)
+
+# Determine data source: uploaded file, loaded sample, or random dummy
+df_points = st.session_state.df_points
+geojson_data = st.session_state.geojson_data
+
+# If a file was uploaded, try to parse it
+if uploaded_file is not None:
+    if uploaded_file.name.lower().endswith('.csv'):
+        try:
+            df_points = pd.read_csv(uploaded_file)
+            st.info(f"Uploaded CSV with {len(df_points)} rows")
+        except Exception as e:
+            st.error(f"Error reading CSV: {e}")
+    elif uploaded_file.name.lower().endswith('.geojson') or uploaded_file.name.lower().endswith('.json'):
+        try:
+            geojson_data = json.load(uploaded_file)
+            st.info("Uploaded GeoJSON loaded for visualization")
+        except Exception as e:
+            st.error(f"Error reading GeoJSON: {e}")
+
+# If we have points (CSV), plot them
+if df_points is not None:
+    # Ensure required columns exist
+    if {'lat', 'lon'}.issubset(df_points.columns):
+        for _, row in df_points.iterrows():
+            pot = row.get('potential', 'Medium')
+            imp = row.get('impact', 'Moderate')
+            folium.CircleMarker(
+                location=[float(row['lat']), float(row['lon'])],
+                radius=5,
+                color=mineral_colors.get(pot, 'gray'),
+                fill=True,
+                fill_color=mineral_colors.get(pot, 'gray'),
+                fill_opacity=0.7,
+                popup=f"Mineral Potential: {pot}<br>Env Impact: {imp}"
+            ).add_to(m)
+    else:
+        st.warning("CSV must contain 'lat' and 'lon' columns. Using sample/random data instead.")
+
+# If we have GeoJSON, add polygons with styles
+if geojson_data is not None:
+    def style_feature(feature):
+        pot = feature.get('properties', {}).get('potential', 'Medium')
+        return {'fillColor': mineral_colors.get(pot, 'gray'), 'color': '#000', 'weight': 1, 'fillOpacity': 0.5}
+
+    folium.GeoJson(geojson_data, name='Zones', style_function=style_feature, tooltip=folium.GeoJsonTooltip(fields=['name','potential','impact'])).add_to(m)
+
+# If no data provided, fall back to random sample points
+if df_points is None and geojson_data is None:
+    np.random.seed(42)
+    n_points = 100
+    lat = np.random.uniform(40, 50, n_points)
+    lon = np.random.uniform(-120, -110, n_points)
+    mineral_potential = np.random.choice(['High', 'Medium', 'Low'], n_points, p=[0.78, 0.15, 0.07])
+    env_impact = np.random.choice(['Low', 'Moderate', 'High'], n_points, p=[0.3, 0.4, 0.3])
+
+    for i in range(n_points):
+        folium.CircleMarker(
+            location=[lat[i], lon[i]],
+            radius=5,
+            color=mineral_colors[mineral_potential[i]],
+            fill=True,
+            fill_color=mineral_colors[mineral_potential[i]],
+            fill_opacity=0.7,
+            popup=f"Mineral Potential: {mineral_potential[i]}<br>Env Impact: {env_impact[i]}"
+        ).add_to(m)
+
+# Display map
+folium_static(m)
+
+# Summary Boxes
+st.header("Summaries")
+
+col5, col6 = st.columns(2)
+
+with col5:
+    st.subheader("Mineral Potential Summary")
+    st.metric("High", "78%")
+    st.metric("Medium", "15%")
+    st.metric("Low", "7%")
+
+with col6:
+    st.subheader("Environmental Impact Summary")
+    st.metric("Vegetation Loss", "Moderate")
+    st.metric("Land Degradation", "High")
+    st.metric("Pollution Risk", "Low")
+
+# Graphs Section
+st.header("Graphs Section")
+
+# Dummy data for graphs
+areas = np.linspace(0, 100, 50)
+mineral_prob = 0.8 * np.exp(-0.01 * areas) + 0.2 * np.random.normal(0, 0.1, 50)
+
+years_graph = list(range(2015, 2025))
+veg_change = [100 - i*2 + random.uniform(-5,5) for i in range(10)]
+
+mining_activity = [random.randint(50, 100) for _ in range(10)]
+env_impact_vals = [random.randint(20, 80) for _ in range(10)]
+
+col7, col8, col9 = st.columns(3)
+
+with col7:
+    # Line graph: Mineral Probability vs Area
+    fig1 = px.line(x=areas, y=mineral_prob, title="Mineral Probability vs Area")
+    fig1.update_layout(xaxis_title="Area (km²)", yaxis_title="Probability")
+    st.plotly_chart(fig1)
+
+with col8:
+    # Line graph: Vegetation Change Over Time
+    fig2 = px.line(x=years_graph, y=veg_change, title="Vegetation Change Over Time")
+    fig2.update_layout(xaxis_title="Year", yaxis_title="Vegetation Index")
+    st.plotly_chart(fig2)
+
+with col9:
+    # Bar chart: Mining Activity vs Environmental Impact
+    fig3 = go.Figure()
+    fig3.add_trace(go.Bar(x=years_graph, y=mining_activity, name='Mining Activity', marker_color='blue'))
+    fig3.add_trace(go.Bar(x=years_graph, y=env_impact_vals, name='Environmental Impact', marker_color='red'))
+    fig3.update_layout(title="Mining Activity vs Environmental Impact", xaxis_title="Year", yaxis_title="Index")
+    st.plotly_chart(fig3)
+
+# AI Prediction Summary Panel
+st.header("AI Prediction Summary Panel")
+
+col10, col11, col12 = st.columns(3)
+
+with col10:
+    st.metric("Recommended for Exploration", "YES")
+
+with col11:
+    st.metric("Environmental Risk Level", "MODERATE")
+
+with col12:
+    st.write("**Suggestion:** Controlled Mining Suggested")
